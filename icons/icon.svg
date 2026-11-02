@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2f6bff"/><stop offset="1" stop-color="#7b4dff"/></linearGradient></defs>
+  <rect width="512" height="512" fill="url(#g)"/>
+  <rect x="150" y="96" width="250" height="150" rx="26" fill="#ffd60a" transform="rotate(-10 275 171)"/>
+  <rect x="96" y="150" width="320" height="230" rx="44" fill="#fff" opacity=".96"/>
+  <rect x="96" y="150" width="320" height="62" rx="30" fill="#fff"/>
+  <path d="M96 205h320" stroke="#2f6bff" stroke-opacity=".18" stroke-width="10"/>
+  <circle cx="352" cy="292" r="26" fill="#2f6bff"/>
+    <text x="200" y="322" font-family="-apple-system, Helvetica, Arial" font-size="110" font-weight="800" fill="#2f6bff" text-anchor="middle">₽</text>
+</svg>

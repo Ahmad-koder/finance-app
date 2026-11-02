@@ -67,7 +67,7 @@ const ACCOUNT_TYPES = {
   savings: { name: 'Накопительные счета', one: 'Накопительный счёт', icon: '🐷' },
   deposit: { name: 'Вклады', one: 'Вклад', icon: '🔒' },
   invest: { name: 'Инвестиции', one: 'Брокерский счёт', icon: '📈' },
-  debt: { name: 'Долги', one: 'Долг (мне должны / я должен)', icon: '🤝' },
+  debt: { name: 'Долги', one: 'Долг', icon: '🤝' },
   other: { name: 'Прочее', one: 'Другое', icon: '👛' },
 };
 const PALETTE = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#00c7be', '#30b0c7', '#007aff', '#2f6bff', '#5856d6', '#af52de', '#ff2d55', '#a2845e', '#8e8e93', '#1c1c1e', '#64d2ff', '#ff6482'];
@@ -751,12 +751,14 @@ function guessCategory(text, kind, bankCat = '') {
 function accForm(existing, onSaved, preset = {}) {
   const a = existing ? { ...existing } : { name: '', type: 'card', currency: S.settings.currency, initial: 0, color: '#2f6bff', icon: '💳', includeInTotal: true, archived: false, last4: '', creditLimit: 0, bankId: '', ...preset };
   const curBal = existing ? BAL[existing.id] || 0 : 0;
+  let neg = existing ? curBal < 0 : ['debt', 'credit'].includes(a.type) && !(+a.initial > 0), signTouched = !!existing;
   const body = `
     ${grp(fld('Название', `<input id="a-name" placeholder="Например, Т-Банк Black" value="${esc(a.name)}" autocomplete="off">`),
       fld('Тип', selHtml('a-type', Object.entries(ACCOUNT_TYPES).map(([k, v]) => [k, v.one]), a.type)),
       fld('Валюта', selHtml('a-cur', curOpts(), a.currency)),
-      fld(existing ? 'Текущий баланс' : 'Начальный баланс', `<input id="a-bal" inputmode="decimal" placeholder="0" value="${fmtInput(existing ? curBal : a.initial) || ''}">`))}
-    <p class="hint" id="a-bal-hint" style="margin-top:-8px">Для кредитной карты и долгов, которые вы должны, укажите сумму со знаком минус.</p>
+      fld(`<span id="a-bal-l">${existing ? 'Текущий баланс' : 'Начальный баланс'}</span>`, `<input id="a-bal" inputmode="decimal" placeholder="0" value="${fmtInput(Math.abs(existing ? curBal : a.initial)) || ''}">`))}
+    <div class="seg" id="a-sign" style="margin-top:-6px"><button type="button" data-v="pos"></button><button type="button" data-v="neg"></button></div>
+    <p class="hint" id="a-bal-hint" style="margin-top:-6px"></p>
     <div class="group" id="a-credit">${fld('Кредитный лимит', `<input id="a-limit" inputmode="decimal" placeholder="0" value="${fmtInput(a.creditLimit) || ''}">`)}</div>
     ${grp(fld('Банк', selHtml('a-bank', [['', 'Не указан'], ...S.banks.map(b => [b.id, b.name])], a.bankId)),
       fld('Последние 4 цифры', `<input id="a-last4" inputmode="numeric" maxlength="4" placeholder="1234" value="${esc(a.last4 || '')}">`))}
@@ -775,7 +777,7 @@ function accForm(existing, onSaved, preset = {}) {
       a.creditLimit = a.type === 'credit' ? (parseNum($('#a-limit', w).value) || 0) : 0;
       a.includeInTotal = $('#a-inc', w).checked;
       if (existing) a.archived = $('#a-arch', w).checked;
-      const bal = parseNum($('#a-bal', w).value) || 0;
+      const bal = Math.abs(parseNum($('#a-bal', w).value) || 0) * (neg ? -1 : 1);   // знак задаётся переключателем: на клавиатуре iPhone нет минуса
       if (existing) {
         a.initial = round2((+existing.initial || 0) + (bal - curBal));   // корректируем начальный остаток, чтобы получить нужный баланс
         Object.assign(S.accounts.find(x => x.id === existing.id), a);
@@ -787,10 +789,27 @@ function accForm(existing, onSaved, preset = {}) {
       onSaved?.(a);
     },
     onMount: w => {
+      const SIGN = {
+        debt: { label: 'Сумма', pos: 'Мне должны', neg: 'Я должен', hint: { pos: 'Вам вернут эти деньги. Когда вернут — сделайте перевод с этого счёта на карту.', neg: 'Вы должны эту сумму. Когда отдаёте — сделайте перевод с карты на этот счёт, и долг уменьшится.' } },
+        credit: { label: 'Сумма', pos: 'Свои деньги', neg: 'Долг по карте', hint: { pos: 'На карте лежат ваши собственные деньги сверх лимита.', neg: 'Сколько вы сейчас должны банку по карте. Доступный остаток посчитается из лимита.' } },
+        other: { label: existing ? 'Текущий баланс' : 'Начальный баланс', pos: 'Остаток', neg: 'В минусе', hint: { pos: '', neg: 'Баланс счёта отрицательный (например, овердрафт).' } },
+      };
+      const paintSign = () => {
+        const cfg = SIGN[$('#a-type', w).value] || SIGN.other;
+        $('#a-bal-l', w).textContent = cfg.label;
+        const [bp, bn] = $$('#a-sign button', w);
+        bp.textContent = cfg.pos; bn.textContent = cfg.neg;
+        bp.classList.toggle('on', !neg); bn.classList.toggle('on', neg);
+        const hint = cfg.hint[neg ? 'neg' : 'pos'];
+        $('#a-bal-hint', w).textContent = hint; $('#a-bal-hint', w).hidden = !hint;
+      };
+      $('#a-sign', w).onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; neg = b.dataset.v === 'neg'; signTouched = true; paintSign(); };
+      $('#a-bal', w).addEventListener('input', e => { if (/^\s*[-−]/.test(e.target.value)) { neg = true; signTouched = true; e.target.value = e.target.value.replace(/[-−]/g, ''); paintSign(); } });
       const paintType = () => {
         const ty = $('#a-type', w).value;
         $('#a-credit', w).hidden = ty !== 'credit';
-        $('#a-bal-hint', w).hidden = !['credit', 'debt'].includes(ty);
+        if (!signTouched) neg = ['debt', 'credit'].includes(ty);
+        paintSign();
         if (!existing && !preset.name && !$('#a-name', w).value) {
           const def = ACCOUNT_TYPES[ty].icon; a.icon = def;
           $$('#a-emoji button', w).forEach(b => b.classList.toggle('on', b.dataset.e === def));

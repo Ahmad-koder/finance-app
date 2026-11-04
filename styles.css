@@ -105,6 +105,11 @@ h2.sec button { font-size: 15px; font-weight: 500; color: var(--accent); }
 /* ---------- Пончик ---------- */
 .donut-row { display: flex; gap: 16px; align-items: center; }
 .donut { flex: none; width: 132px; height: 132px; position: relative; }
+.donut.lg { width: 190px; height: 190px; }
+.donut.lg .c b { font-size: 19px; }
+.donut-btn { flex: none; border-radius: 50%; }
+.donut-btn:active { transform: scale(.97); }
+.prog-row.focus { background: var(--accent-soft); }
 .donut svg { width: 100%; height: 100%; transform: rotate(-90deg); }
 .donut .c { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
 .donut .c b { font-size: 15px; }
@@ -315,3 +320,16 @@ pre.sample { white-space: pre-wrap; font: 13px ui-monospace, Menlo, monospace; b
 .stack { display: flex; height: 12px; border-radius: 6px; overflow: hidden; margin: 12px 0 6px; background: var(--card2); }
 .stack i { display: block; height: 100%; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 7px; }
+
+/* ---------- Удобство ---------- */
+#toast.act { pointer-events: auto; display: flex; align-items: center; gap: 14px; }
+#toast button { color: #8fb0ff; font-weight: 700; font-size: 14px; }
+.hero-btn { display: block; width: 100%; text-align: left; }
+button.stat { width: 100%; text-align: left; }
+button.card:active { transform: scale(.985); }
+#tx-dq { margin-bottom: 10px; }
+#tx-sug { margin-top: -6px; }
+.chip.sug { font-size: 13.5px; padding: 7px 11px; }
+.due-b { margin-top: 10px; padding-left: 50px; }
+.due-b .btn { flex: 1; background: var(--card2); }
+.due-b .btn.primary { background: var(--accent); }

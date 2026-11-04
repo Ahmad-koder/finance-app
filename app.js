@@ -247,9 +247,23 @@ const ICON = {
    Общие UI-элементы
    ===================================================================== */
 let toastTimer;
-function toast(msg) {
-  const el = $('#toast'); el.textContent = msg; el.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
+function toast(msg, action) {
+  const el = $('#toast');
+  el.innerHTML = esc(msg) + (action ? `<button type="button">${esc(action.label)}</button>` : '');
+  el.classList.toggle('act', !!action);
+  if (action) $('button', el).onclick = () => { clearTimeout(toastTimer); el.classList.remove('show', 'act'); action.fn(); };
+  el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show', 'act'), action ? 5000 : 2400);
+}
+// Снимок данных до удаления — чтобы можно было отменить одним нажатием
+const undoTo = snap => ({ label: 'Отменить', fn: () => { S = migrate(JSON.parse(snap)); commit('Восстановлено'); } });
+const daysBetween = (a, b) => Math.round((parseYmd(b) - parseYmd(a)) / 864e5);
+function inDays(date) {
+  const d = daysBetween(today(), date);
+  if (d < 0) return `просрочено на ${-d} ${plural(-d, 'день', 'дня', 'дней')}`;
+  if (d === 0) return 'сегодня';
+  if (d === 1) return 'завтра';
+  return `через ${d} ${plural(d, 'день', 'дня', 'дней')}`;
 }
 const topbar = (title, right = '') => `<div class="top"><h1>${title}</h1><div class="top-act">${right}</div></div>`;
 const monthNav = () => `<div class="mnav"><button data-act="month" data-d="-1" aria-label="Предыдущий месяц">‹</button><button class="mtitle" data-act="monthNow">${monthTitle(ui.month)}</button><button data-act="month" data-d="1" aria-label="Следующий месяц">›</button></div>`;
@@ -322,10 +336,10 @@ const topSheetClose = () => { const all = $$('.sheet-wrap'); all[all.length - 1]
    ===================================================================== */
 const ui = { tab: 'overview', month: curMonth(), ops: { type: 'all', accountId: '', categoryId: '', q: '' }, plans: 'goals', showArchived: false };
 
-function commit(msg) {
+function commit(msg, action) {
   save(); render();
   $$('.sheet-wrap').forEach(w => w.refresh?.());
-  if (msg) toast(msg);
+  if (msg) toast(msg, action);
 }
 
 const TABS = [['overview', 'Обзор'], ['ops', 'Операции'], ['accounts', 'Счета'], ['plans', 'Планы'], ['more', 'Ещё']];
@@ -378,8 +392,14 @@ function viewOverview() {
   const items = topN(exp);
 
   let h = topbar('Обзор', `<button class="icon-btn" data-act="reports" aria-label="Отчёты">${ICON.chart}</button>`);
-  h += `<div class="card hero"><div class="muted">Всего на счетах</div><div class="big">${money(nw.total)}</div>
-    ${nw.debt < 0 ? `<div class="hero-sub"><span>Активы ${money(nw.assets)}</span><span>Долги ${money(nw.debt)}</span></div>` : ''}</div>`;
+  h += `<button class="card hero hero-btn" data-act="tab" data-v="accounts"><div class="muted">Всего на счетах</div><div class="big">${money(nw.total)}</div>
+    ${nw.debt < 0 ? `<div class="hero-sub"><span>Активы ${money(nw.assets)}</span><span>Долги ${money(nw.debt)}</span></div>` : ''}</button>`;
+
+  const lb = S.settings.lastBackup, snooze = S.settings.backupSnooze;
+  if (S.transactions.length >= 20 && (!lb || daysBetween(lb, today()) >= 30) && (!snooze || daysBetween(snooze, today()) >= 14)) {
+    h += `<div class="card" style="margin-top:12px"><div class="prog-top">${icBox('💾', '#30b0c7')}<span class="rb"><span class="rt">Сделайте резервную копию</span><span class="rs" style="white-space:normal">${lb ? `Последняя — ${shortDate(lb)}` : 'Копии ещё не было'}. Данные хранятся только на этом телефоне.</span></span></div>
+      <div class="btns" style="margin-top:12px"><button class="btn small primary" data-act="backup">Сохранить копию</button><button class="btn small" data-act="backupLater">Позже</button></div></div>`;
+  }
 
   if (!S.transactions.length && !S.settings.onboarded) {
     h += `<div class="card" style="margin-top:12px"><b>Добро пожаловать 👋</b><p class="muted" style="margin:6px 0 12px">Для начала укажите текущие остатки на счетах, затем добавляйте операции кнопкой «+». Выписки банков можно загрузить в разделе «Ещё → Банки».</p>
@@ -388,25 +408,35 @@ function viewOverview() {
 
   if (due.length) {
     h += `<h2 class="sec">Ожидают проведения</h2><div class="list">${due.map(r => {
-      const c = catById(r.categoryId);
-      return `<div class="row">${icBox(c?.icon || '🔁', c?.color || '#8e8e93')}<span class="rb"><span class="rt">${esc(r.name)}</span><span class="rs">${shortDate(r.nextDate)} · ${r.type === 'income' ? '+' : '−'}${money(r.amount, accCur(r.accountId))}</span></span>
-        <span class="btns"><button class="btn small" data-act="recSkip" data-id="${r.id}">Пропуск</button><button class="btn small primary" data-act="recPost" data-id="${r.id}">Провести</button></span></div>`;
+      const to = r.type === 'transfer' ? ` → ${esc(acc(r.toAccountId)?.name || '?')}` : '';
+      return `<div class="prog-row"><div class="prog-top">${recIcon(r)}<span class="rb"><span class="rt">${esc(r.name)}</span><span class="rs">${inDays(r.nextDate)} · ${shortDate(r.nextDate)}${to}</span></span><span class="ra ${r.type === 'income' ? 'pos' : ''}">${recAmount(r)}</span></div>
+        <div class="btns due-b"><button class="btn small" data-act="recSkip" data-id="${r.id}">Пропустить</button><button class="btn small primary" data-act="recPost" data-id="${r.id}">Провести</button></div></div>`;
     }).join('')}</div>`;
   }
 
+  const weekAhead = ymd(new Date(Date.now() + 7 * 864e5)), twoWeeks = ymd(new Date(Date.now() + 14 * 864e5));
+  const soonRec = S.recurring.filter(r => r.nextDate > today() && r.nextDate <= weekAhead).sort((a, b) => a.nextDate.localeCompare(b.nextDate));
+  const soonDebt = S.accounts.filter(a => a.type === 'debt' && !a.archived && a.dueDate && Math.abs(BAL[a.id] || 0) > 0 && a.dueDate <= twoWeeks);
+  if (soonRec.length || soonDebt.length) {
+    h += `<h2 class="sec">Скоро</h2><div class="list">${soonDebt.map(a => {
+      const bal = BAL[a.id] || 0;
+      return `<button class="row" data-act="accDetail" data-id="${a.id}">${icBox('🤝', a.dueDate < today() ? '#ff3b30' : '#ff9500')}<span class="rb"><span class="rt">${esc(a.name)}</span><span class="rs ${a.dueDate < today() ? 'neg' : ''}">${bal < 0 ? 'Вернуть долг' : 'Вам должны вернуть'} · ${inDays(a.dueDate)}</span></span><span class="ra ${bal < 0 ? 'neg' : 'pos'}">${money(Math.abs(bal), a.currency)}</span></button>`;
+    }).join('')}${soonRec.map(r => `<button class="row" data-act="editRec" data-id="${r.id}">${recIcon(r)}<span class="rb"><span class="rt">${esc(r.name)}</span><span class="rs">${inDays(r.nextDate)} · ${shortDate(r.nextDate)}</span></span><span class="ra ${r.type === 'income' ? 'pos' : ''}">${recAmount(r)}</span></button>`).join('')}</div>`;
+  }
+
   h += monthNav();
-  h += `<div class="stats"><div class="card stat"><div class="muted">Доходы</div><div class="b pos">${money(st.income)}</div></div>
-    <div class="card stat"><div class="muted">Расходы</div><div class="b">${money(st.expense)}</div></div></div>
+  h += `<div class="stats"><button class="card stat" data-act="opsKind" data-v="income"><div class="muted">Доходы</div><div class="b pos">${money(st.income)}</div></button>
+    <button class="card stat" data-act="opsKind" data-v="expense"><div class="muted">Расходы</div><div class="b">${money(st.expense)}</div></button></div>
     <div class="stat-foot"><span>Остаток: <b class="${st.income - st.expense < 0 ? 'neg' : ''}">${money(st.income - st.expense)}</b></span>${days ? `<span>≈ ${money(Math.round(st.expense / days))} в день</span>` : ''}</div>`;
 
   const an = S.transactions.length ? analyze(ui.month) : null;
   if (an && an.tips.length) {
     h += `<button class="card insight-cta" data-act="analytics">${icBox('💡', '#ffcc00')}<span class="rb"><span class="rt" style="white-space:normal">${an.total > 0 ? `Сэкономить ≈ ${money(roundNice(an.total))}/мес` : 'Советы по расходам'}</span><span class="rs">${esc(an.tips[0].title)}${an.tips.length > 1 ? ` и ещё ${an.tips.length - 1}` : ''}</span></span><span class="chev">${ICON.chev.replace('<svg', '<svg width="16" height="16"')}</span></button>`;
   }
-  h += `<h2 class="sec">Расходы по категориям</h2><div class="card">`;
+  h += `<h2 class="sec">Расходы по категориям ${exp.length ? '<button data-act="catChart">Суммы</button>' : ''}</h2><div class="card">`;
   if (exp.length) {
-    h += `<div class="donut-row">${donut(items, st.expense, money(st.expense), 'расходы')}<div class="legend">${items.map(it =>
-      `<button data-act="catOps" data-id="${it.id}"><i style="background:${it.color}"></i><span class="n">${esc(it.name)}</span><span class="p">${Math.round(it.value / st.expense * 100)}%</span></button>`).join('')}</div></div>`;
+    h += `<div class="donut-row"><button class="donut-btn" data-act="catChart" aria-label="Суммы по категориям">${donut(items, st.expense, money(st.expense), 'расходы')}</button><div class="legend">${items.map(it =>
+      `<button data-act="catChart" data-id="${it.id}"><i style="background:${it.color}"></i><span class="n">${esc(it.name)}</span><span class="p">${Math.round(it.value / st.expense * 100)}%</span></button>`).join('')}</div></div>`;
   } else h += emptyBox('🧾', 'В этом месяце расходов пока нет');
   h += `</div>`;
 
@@ -477,7 +507,8 @@ function opsList() {
    ===================================================================== */
 function accountSub(a) {
   const bank = S.banks.find(b => b.id === a.bankId);
-  return [bank?.name || ACCOUNT_TYPES[a.type]?.one, a.last4 ? '•• ' + a.last4 : '', a.includeInTotal ? '' : 'не в итоге'].filter(Boolean).join(' · ');
+  const due = a.type === 'debt' && a.dueDate && (BAL[a.id] || 0) !== 0 ? `вернуть ${a.dueDate < today() ? 'было ' : ''}до ${shortDate(a.dueDate)}` : '';
+  return [bank?.name || ACCOUNT_TYPES[a.type]?.one, a.last4 ? '•• ' + a.last4 : '', due, a.includeInTotal ? '' : 'не в итоге'].filter(Boolean).join(' · ');
 }
 function accRow(a) {
   const bal = BAL[a.id] || 0;
@@ -530,11 +561,15 @@ function goalRow(g) {
     ${progBar(pct)}<div class="prog-foot"><span>${foot}</span></div></button>`;
 }
 const PERIODS = { day: 'Каждый день', week: 'Каждую неделю', month: 'Каждый месяц', quarter: 'Каждый квартал', year: 'Каждый год' };
+const recIcon = r => r.type === 'transfer' ? icBox('⇄', '#8e8e93') : icBox(catById(r.categoryId)?.icon || '🔁', catById(r.categoryId)?.color || '#8e8e93');
+const recAmount = r => (r.type === 'income' ? '+' : r.type === 'transfer' ? '' : '−') + money(r.amount, accCur(r.accountId));
 function recRow(r) {
-  const c = catById(r.categoryId);
   const overdue = r.nextDate <= today();
-  return `<button class="row" data-act="editRec" data-id="${r.id}">${icBox(c?.icon || '🔁', c?.color || '#8e8e93')}<span class="rb"><span class="rt">${esc(r.name)}</span><span class="rs">${PERIODS[r.period]} · ${overdue ? '<span class="neg">' : ''}след. ${shortDate(r.nextDate)}${overdue ? '</span>' : ''}</span></span><span class="ra ${r.type === 'income' ? 'pos' : ''}">${r.type === 'income' ? '+' : '−'}${money(r.amount, accCur(r.accountId))}</span></button>`;
+  const to = r.type === 'transfer' ? ` · → ${esc(acc(r.toAccountId)?.name || '?')}` : '';
+  return `<button class="row" data-act="editRec" data-id="${r.id}">${recIcon(r)}<span class="rb"><span class="rt">${esc(r.name)}</span><span class="rs">${PERIODS[r.period]}${to} · ${overdue ? '<span class="neg">' : ''}след. ${shortDate(r.nextDate)}${overdue ? '</span>' : ''}</span></span><span class="ra ${r.type === 'income' ? 'pos' : ''}">${recAmount(r)}</span></button>`;
 }
+// Обязательства: расходы и платежи по кредитам/долгам
+const isObligation = r => r.type === 'expense' || (r.type === 'transfer' && ['debt', 'credit'].includes(acc(r.toAccountId)?.type));
 function monthlyEquivalent(r) {
   const k = { day: 30.4, week: 4.35, month: 1, quarter: 1 / 3, year: 1 / 12 }[r.period] || 1;
   return toMain(r.amount, accCur(r.accountId)) * k;
@@ -561,7 +596,7 @@ function viewPlans() {
     const list = [...S.recurring].sort((a, b) => a.nextDate.localeCompare(b.nextDate));
     if (!list.length) h += `<div class="card">${emptyBox('🔁', 'Подписки, аренда, кредиты, зарплата — добавьте их, и приложение напомнит провести платёж в нужный день.', '<button class="btn small primary" data-act="addRec">Добавить платёж</button>')}</div>`;
     else {
-      const exp = list.filter(r => r.type === 'expense').reduce((s, r) => s + monthlyEquivalent(r), 0);
+      const exp = list.filter(isObligation).reduce((s, r) => s + monthlyEquivalent(r), 0);
       const inc = list.filter(r => r.type === 'income').reduce((s, r) => s + monthlyEquivalent(r), 0);
       h += `<div class="stats" style="margin-bottom:12px"><div class="card stat"><div class="muted">Обязательные в мес.</div><div class="b">${money(exp)}</div></div><div class="card stat"><div class="muted">Поступления в мес.</div><div class="b pos">${money(inc)}</div></div></div>`;
       h += `<div class="list">${list.map(recRow).join('')}</div>`;
@@ -614,8 +649,30 @@ function accChips(selected, exclude) {
     `<button type="button" class="chip ${a.id === selected ? 'on' : ''}" data-v="${a.id}"><span>${esc(a.icon)}</span><span>${esc(a.name)}<small>${money(BAL[a.id] || 0, a.currency)}</small></span></button>`).join('')
     + `<button type="button" class="chip add" data-new="1">＋ Счёт</button>`;
 }
+// Частые категории — в начало сетки (по операциям за последние 4 месяца)
+function catUsage(kind) {
+  const from = ymd(new Date(Date.now() - 120 * 864e5)), n = {};
+  for (const t of S.transactions) if (t.type === kind && t.date >= from && t.categoryId) n[t.categoryId] = (n[t.categoryId] || 0) + 1;
+  return n;
+}
+// Подсказки заметок: прошлые места/описания, по нажатию подставляется и категория
+function noteSuggestions(type, q) {
+  q = q.trim().toLowerCase();
+  const m = new Map();
+  for (const t of S.transactions) {
+    if (t.type !== type || !t.note) continue;
+    const k = t.note.trim().toLowerCase();
+    if (q && (!k.includes(q) || k === q)) continue;
+    const e = m.get(k) || { note: t.note.trim(), n: 0, last: '', categoryId: null };
+    e.n++;
+    if (t.date >= e.last) { e.last = t.date; e.categoryId = t.categoryId; }
+    m.set(k, e);
+  }
+  return [...m.values()].sort((a, b) => b.n - a.n || b.last.localeCompare(a.last)).slice(0, 8);
+}
 function catGrid(kind, selected) {
-  return S.categories.filter(c => c.kind === kind).map(c =>
+  const n = catUsage(kind);
+  return S.categories.filter(c => c.kind === kind).map((c, i) => [c, i]).sort((a, b) => (n[b[0].id] || 0) - (n[a[0].id] || 0) || a[1] - b[1]).map(([c]) =>
     `<button type="button" data-v="${c.id}" class="${c.id === selected ? 'on' : ''}">${icBox(c.icon, c.color)}<span>${esc(c.name)}</span></button>`).join('')
     + `<button type="button" data-new="1"><span class="ic" style="background:var(--accent-soft);color:var(--accent)">＋</span><span>Новая</span></button>`;
 }
@@ -631,8 +688,11 @@ function txForm(existing, preset = {}) {
     <div class="lbl" id="tx-from-l">Счёт</div><div class="chips" id="tx-acc"></div>
     <div id="tx-to-w"><div class="lbl">На счёт</div><div class="chips" id="tx-to"></div>
       <div class="group" id="tx-toamt-w">${fld('Зачислено', `<input id="tx-toamt" inputmode="decimal" placeholder="Сумма в валюте счёта" value="${fmtInput(t.toAmount)}">`)}</div></div>
+    ${grp(fld('Заметка', `<input id="tx-note" placeholder="Например, магазин" value="${esc(t.note)}" autocomplete="off">`))}
+    <div class="chips" id="tx-sug"></div>
     <div id="tx-cat-w"><div class="lbl">Категория</div><div class="cat-grid" id="tx-cat"></div></div>
-    ${grp(fld('Дата', `<input type="date" id="tx-date" value="${t.date}">`), fld('Заметка', `<input id="tx-note" placeholder="Например, магазин" value="${esc(t.note)}" autocomplete="off">`))}
+    <div class="chips" id="tx-dq">${[[0, 'Сегодня'], [-1, 'Вчера'], [-2, 'Позавчера']].map(([d, l]) => `<button type="button" class="chip" data-d="${d}">${l}</button>`).join('')}</div>
+    ${grp(fld('Дата', `<input type="date" id="tx-date" value="${t.date}">`))}
     ${existing ? `<div class="btns"><button type="button" class="btn" id="tx-dup">Повторить</button><button type="button" class="btn danger" id="tx-del">Удалить</button></div>` : ''}`;
 
   openSheet({
@@ -684,8 +744,33 @@ function txForm(existing, preset = {}) {
           if (t.categoryId && catById(t.categoryId)?.kind !== t.type) t.categoryId = '';
           $('#tx-cat', w).innerHTML = catGrid(t.type, t.categoryId);
         }
+        paintSug();
       };
-      paint();
+      const paintSug = () => {
+        const box = $('#tx-sug', w);
+        const list = t.type === 'transfer' ? [] : noteSuggestions(t.type, $('#tx-note', w).value);
+        box.hidden = !list.length;
+        box.innerHTML = list.map((x, i) => { const c = catById(x.categoryId); return `<button type="button" class="chip sug" data-i="${i}">${c ? esc(c.icon) + ' ' : ''}${esc(x.note)}</button>`; }).join('');
+        box.onclick = e => {
+          const b = e.target.closest('[data-i]'); if (!b) return;
+          const x = list[+b.dataset.i];
+          $('#tx-note', w).value = x.note;
+          if (x.categoryId && catById(x.categoryId)?.kind === t.type) t.categoryId = x.categoryId;
+          paint();
+        };
+      };
+      const paintDate = () => {
+        const v = $('#tx-date', w).value;
+        $$('#tx-dq [data-d]', w).forEach(b => { const d = new Date(); d.setDate(d.getDate() + +b.dataset.d); b.classList.toggle('on', ymd(d) === v); });
+      };
+      $('#tx-dq', w).onclick = e => {
+        const b = e.target.closest('[data-d]'); if (!b) return;
+        const d = new Date(); d.setDate(d.getDate() + +b.dataset.d);
+        $('#tx-date', w).value = ymd(d); paintDate();
+      };
+      $('#tx-date', w).addEventListener('change', paintDate);
+      $('#tx-note', w).addEventListener('input', paintSug);
+      paint(); paintDate();
       $('#tx-type', w).onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; t.type = b.dataset.v; paint(); };
       $('#tx-acc', w).onclick = e => {
         const b = e.target.closest('button'); if (!b) return;
@@ -703,9 +788,9 @@ function txForm(existing, preset = {}) {
         t.categoryId = b.dataset.v; paint();
       };
       $('#tx-del', w)?.addEventListener('click', () => {
-        if (!confirm('Удалить операцию?')) return;
+        const snap = JSON.stringify(S);
         S.transactions = S.transactions.filter(x => x.id !== existing.id);
-        w.close(); commit('Операция удалена');
+        w.close(); commit('Операция удалена', undoTo(snap));
       });
       $('#tx-dup', w)?.addEventListener('click', () => {
         w.close();
@@ -759,6 +844,7 @@ function accForm(existing, onSaved, preset = {}) {
       fld(`<span id="a-bal-l">${existing ? 'Текущий баланс' : 'Начальный баланс'}</span>`, `<input id="a-bal" inputmode="decimal" placeholder="0" value="${fmtInput(Math.abs(existing ? curBal : a.initial)) || ''}">`))}
     <div class="seg" id="a-sign" style="margin-top:-6px"><button type="button" data-v="pos"></button><button type="button" data-v="neg"></button></div>
     <p class="hint" id="a-bal-hint" style="margin-top:-6px"></p>
+    <div class="group" id="a-due-w">${fld('Вернуть до', `<input type="date" id="a-due" value="${a.dueDate || ''}">`)}</div>
     <div class="group" id="a-credit">${fld('Кредитный лимит', `<input id="a-limit" inputmode="decimal" placeholder="0" value="${fmtInput(a.creditLimit) || ''}">`)}</div>
     ${grp(fld('Банк', selHtml('a-bank', [['', 'Не указан'], ...S.banks.map(b => [b.id, b.name])], a.bankId)),
       fld('Последние 4 цифры', `<input id="a-last4" inputmode="numeric" maxlength="4" placeholder="1234" value="${esc(a.last4 || '')}">`))}
@@ -775,6 +861,7 @@ function accForm(existing, onSaved, preset = {}) {
       a.type = $('#a-type', w).value; a.currency = $('#a-cur', w).value;
       a.bankId = $('#a-bank', w).value; a.last4 = $('#a-last4', w).value.replace(/\D/g, '').slice(0, 4);
       a.creditLimit = a.type === 'credit' ? (parseNum($('#a-limit', w).value) || 0) : 0;
+      a.dueDate = a.type === 'debt' ? $('#a-due', w).value : '';
       a.includeInTotal = $('#a-inc', w).checked;
       if (existing) a.archived = $('#a-arch', w).checked;
       const bal = Math.abs(parseNum($('#a-bal', w).value) || 0) * (neg ? -1 : 1);   // знак задаётся переключателем: на клавиатуре iPhone нет минуса
@@ -808,6 +895,7 @@ function accForm(existing, onSaved, preset = {}) {
       const paintType = () => {
         const ty = $('#a-type', w).value;
         $('#a-credit', w).hidden = ty !== 'credit';
+        $('#a-due-w', w).hidden = ty !== 'debt';
         if (!signTouched) neg = ['debt', 'credit'].includes(ty);
         paintSign();
         if (!existing && !preset.name && !$('#a-name', w).value) {
@@ -822,13 +910,14 @@ function accForm(existing, onSaved, preset = {}) {
       $('#a-del', w)?.addEventListener('click', () => {
         const n = S.transactions.filter(t => t.accountId === existing.id || t.toAccountId === existing.id).length;
         if (!confirm(n ? `Удалить счёт и ${n} ${plural(n, 'операцию', 'операции', 'операций')} по нему? Можно вместо этого отправить счёт в архив.` : 'Удалить счёт?')) return;
+        const snap = JSON.stringify(S);
         S.accounts = S.accounts.filter(x => x.id !== existing.id);
         S.transactions = S.transactions.filter(t => t.accountId !== existing.id && t.toAccountId !== existing.id);
         S.banks.forEach(b => b.accountIds = b.accountIds.filter(id => id !== existing.id));
         S.goals.forEach(g => { if (g.accountId === existing.id) g.accountId = ''; });
         S.recurring = S.recurring.filter(r => r.accountId !== existing.id);
         $$('.sheet-wrap').forEach(x => x.close());
-        commit('Счёт удалён');
+        commit('Счёт удалён', undoTo(snap));
       });
     },
   });
@@ -850,6 +939,7 @@ function accDetail(id) {
       ${a.type === 'credit' && a.creditLimit ? `<div class="muted">Лимит ${money(a.creditLimit, a.currency)} · доступно ${money(a.creditLimit + bal, a.currency)}</div>${progBar(-bal / a.creditLimit * 100, -bal / a.creditLimit > .85 ? 'over' : '')}` : ''}
       <div class="stat-foot"><span>За ${MONTHS[new Date().getMonth()]}: <b class="pos">+${money(inc, a.currency)}</b></span><span><b>−${money(out, a.currency)}</b></span></div></div>
       <div class="btns" style="margin:12px 0"><button class="btn" data-act="addTxAcc" data-id="${id}">＋ Операция</button><button class="btn" data-act="transferFrom" data-id="${id}">⇄ Перевод</button></div>
+      ${['debt', 'credit'].includes(a.type) ? `<button class="btn" data-act="recToAcc" data-id="${id}">🔁 Ежемесячный платёж по ${a.type === 'credit' ? 'карте' : 'долгу'}</button>` : ''}
       <button class="btn" data-act="editAcc" data-id="${id}">Изменить счёт</button>`;
     h += `<h2 class="sec">Операции</h2>`;
     h += list.length ? `<div class="list">${list.slice(0, 100).map(t => txRow(t, true)).join('')}</div>` : `<div class="card">${emptyBox('🧾', 'По счёту пока нет операций')}</div>`;
@@ -902,12 +992,13 @@ function catForm(existing, kind, onSaved) {
         if (!others.length) return toast('Нельзя удалить последнюю категорию');
         const fallback = others.find(x => x.name === 'Другое') || others[0];
         if (!confirm(n ? `Удалить категорию? ${n} ${plural(n, 'операция будет перенесена', 'операции будут перенесены', 'операций будут перенесены')} в «${fallback.name}».` : 'Удалить категорию?')) return;
+        const snap = JSON.stringify(S);
         S.transactions.forEach(t => { if (t.categoryId === existing.id) t.categoryId = fallback.id; });
         S.recurring.forEach(r => { if (r.categoryId === existing.id) r.categoryId = fallback.id; });
         S.budgets = S.budgets.filter(b => b.categoryId !== existing.id);
         S.rules = S.rules.filter(r => r.categoryId !== existing.id);
         S.categories = S.categories.filter(x => x.id !== existing.id);
-        w.close(); commit('Категория удалена');
+        w.close(); commit('Категория удалена', undoTo(snap));
       });
     },
   });
@@ -970,9 +1061,9 @@ function goalForm(existing) {
       wirePick($('#g-emoji', w), 'e', v => g.icon = v);
       wirePick($('#g-color', w), 'c', v => g.color = v);
       $('#g-del', w)?.addEventListener('click', () => {
-        if (!confirm('Удалить цель?')) return;
+        const snap = JSON.stringify(S);
         S.goals = S.goals.filter(x => x.id !== existing.id);
-        $$('.sheet-wrap').forEach(x => x.close()); commit('Цель удалена');
+        $$('.sheet-wrap').forEach(x => x.close()); commit('Цель удалена', undoTo(snap));
       });
     },
   });
@@ -1068,8 +1159,8 @@ function budgetForm(existing, preset = {}) {
       const showAvg = () => { const v = avg($('#b-cat', w).value); $('#b-avg', w).textContent = v ? `В среднем за последние 3 месяца: ${money(Math.round(v))} в месяц.` : ''; };
       showAvg(); $('#b-cat', w).onchange = showAvg;
       $('#b-del', w)?.addEventListener('click', () => {
-        if (!confirm('Удалить бюджет?')) return;
-        S.budgets = S.budgets.filter(x => x.id !== existing.id); w.close(); commit('Бюджет удалён');
+        const snap = JSON.stringify(S);
+        S.budgets = S.budgets.filter(x => x.id !== existing.id); w.close(); commit('Бюджет удалён', undoTo(snap));
       });
     },
   });
@@ -1090,16 +1181,19 @@ function advanceDate(s, period, anchorDay) {
   }
   return ymd(d);
 }
-function recForm(existing) {
-  const r = existing ? { ...existing } : { name: '', type: 'expense', amount: '', accountId: lastAccountId(), categoryId: '', period: 'month', nextDate: today(), note: '' };
+function recForm(existing, preset = {}) {
+  const r = existing ? { ...existing } : { name: '', type: 'expense', amount: '', accountId: lastAccountId(), toAccountId: '', categoryId: '', period: 'month', nextDate: today(), note: '', ...preset };
+  const accOpts = S.accounts.filter(a => !a.archived || a.id === r.accountId || a.id === r.toAccountId).map(a => [a.id, a.name]);
   const body = `
-    <div class="seg" id="r-type">${[['expense', 'Расход'], ['income', 'Доход']].map(([v, l]) => `<button type="button" data-v="${v}" class="${r.type === v ? 'on' : ''}">${l}</button>`).join('')}</div>
-    ${grp(fld('Название', `<input id="r-name" placeholder="Аренда, Netflix, зарплата…" value="${esc(r.name)}" autocomplete="off">`),
+    <div class="seg" id="r-type">${[['expense', 'Расход'], ['income', 'Доход'], ['transfer', 'Перевод']].map(([v, l]) => `<button type="button" data-v="${v}" class="${r.type === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+    ${grp(fld('Название', `<input id="r-name" placeholder="Аренда, кредит, зарплата…" value="${esc(r.name)}" autocomplete="off">`),
       fld('Сумма', `<input id="r-amt" inputmode="decimal" placeholder="0" value="${fmtInput(r.amount)}">`),
-      fld('Счёт', selHtml('r-acc', S.accounts.filter(a => !a.archived || a.id === r.accountId).map(a => [a.id, a.name]), r.accountId)),
+      fld('<span id="r-acc-l">Счёт</span>', selHtml('r-acc', accOpts, r.accountId)),
+      `<label class="fld" id="r-to-w"><span>На счёт</span>${selHtml('r-to', [['', 'Выберите'], ...accOpts], r.toAccountId)}</label>`,
       fld('Периодичность', selHtml('r-period', Object.entries(PERIODS), r.period)),
       fld('Следующий платёж', `<input type="date" id="r-next" value="${r.nextDate}">`))}
-    <div class="lbl">Категория</div><div class="cat-grid" id="r-cat"></div>
+    <p class="hint" id="r-tr-hint" style="margin-top:-8px">Платёж по кредиту или долгу: выберите «На счёт» — счёт кредита. Каждое проведение будет уменьшать долг. Так же можно автоматически откладывать на накопительный счёт.</p>
+    <div id="r-cat-w"><div class="lbl">Категория</div><div class="cat-grid" id="r-cat"></div></div>
     ${existing ? '<button type="button" class="btn danger" id="r-del">Удалить платёж</button>' : ''}`;
   openSheet({
     title: existing ? 'Регулярный платёж' : 'Новый платёж', cancel: 'Отмена', doneLabel: 'Сохранить', body,
@@ -1110,7 +1204,11 @@ function recForm(existing) {
       if (!r.name) { toast('Введите название'); return false; }
       if (!(r.amount > 0)) { toast('Укажите сумму'); return false; }
       if (!r.accountId) { toast('Выберите счёт'); return false; }
-      if (!r.categoryId) { toast('Выберите категорию'); return false; }
+      r.toAccountId = r.type === 'transfer' ? $('#r-to', w).value : '';
+      if (r.type === 'transfer') {
+        if (!r.toAccountId || r.toAccountId === r.accountId) { toast('Выберите счёт зачисления'); return false; }
+        r.categoryId = null;
+      } else if (!r.categoryId) { toast('Выберите категорию'); return false; }
       if (existing) Object.assign(S.recurring.find(x => x.id === existing.id), r);
       else { r.id = uid(); S.recurring.push(r); }
       commit('Платёж сохранён');
@@ -1118,6 +1216,10 @@ function recForm(existing) {
     onMount: w => {
       const paint = () => {
         $$('#r-type button', w).forEach(b => b.classList.toggle('on', b.dataset.v === r.type));
+        const isTr = r.type === 'transfer';
+        $('#r-to-w', w).hidden = !isTr; $('#r-tr-hint', w).hidden = !isTr; $('#r-cat-w', w).hidden = isTr;
+        $('#r-acc-l', w).textContent = isTr ? 'Со счёта' : 'Счёт';
+        if (isTr) return;
         if (r.categoryId && catById(r.categoryId)?.kind !== r.type) r.categoryId = '';
         $('#r-cat', w).innerHTML = catGrid(r.type, r.categoryId);
       };
@@ -1129,18 +1231,24 @@ function recForm(existing) {
         r.categoryId = b.dataset.v; paint();
       };
       $('#r-del', w)?.addEventListener('click', () => {
-        if (!confirm('Удалить регулярный платёж?')) return;
-        S.recurring = S.recurring.filter(x => x.id !== existing.id); w.close(); commit('Платёж удалён');
+        const snap = JSON.stringify(S);
+        S.recurring = S.recurring.filter(x => x.id !== existing.id); w.close(); commit('Платёж удалён', undoTo(snap));
       });
     },
   });
 }
 function recPost(id) {
   const r = S.recurring.find(x => x.id === id); if (!r) return;
-  if (!acc(r.accountId)) return toast('Счёт платежа удалён — выберите другой');
-  S.transactions.push({ id: uid(), ts: Date.now(), type: r.type, amount: r.amount, accountId: r.accountId, categoryId: r.categoryId, date: r.nextDate, note: r.name });
+  if (!acc(r.accountId) || (r.type === 'transfer' && !acc(r.toAccountId))) return toast('Счёт платежа удалён — выберите другой');
+  const snap = JSON.stringify(S);
+  const tx = { id: uid(), ts: Date.now(), type: r.type, amount: r.amount, accountId: r.accountId, categoryId: r.categoryId, date: r.nextDate, note: r.name };
+  if (r.type === 'transfer') {
+    tx.categoryId = null; tx.toAccountId = r.toAccountId;
+    if (accCur(r.accountId) !== accCur(r.toAccountId)) tx.toAmount = round2(convert(r.amount, accCur(r.accountId), accCur(r.toAccountId)));
+  }
+  S.transactions.push(tx);
   r.nextDate = advanceDate(r.nextDate, r.period, r.anchorDay);
-  commit(`Проведено: ${r.name}`);
+  commit(`Проведено: ${r.name}`, undoTo(snap));
 }
 function recSkip(id) {
   const r = S.recurring.find(x => x.id === id); if (!r) return;
@@ -1423,6 +1531,58 @@ function barChart(months) {
   });
   return `<div class="bars"><svg viewBox="0 0 ${W} ${H}"><line x1="0" x2="${W}" y1="${H - bottom}" y2="${H - bottom}" stroke="var(--sep)"/>${s}</svg></div>`;
 }
+/* =====================================================================
+   Суммы по категориям (открывается по нажатию на диаграмму)
+   ===================================================================== */
+function categoryChartSheet(startMk, startKind = 'expense', focusId) {
+  let mk = startMk, kind = startKind;
+  const body = () => {
+    const list = txInMonth(mk);
+    const cats = byCategory(list, kind);
+    const prev = byCategory(txInMonth(shiftMonth(mk, -1)), kind);
+    const total = cats.reduce((s, c) => s + c.value, 0);
+    const counts = {};
+    for (const t of list) if (t.type === kind) counts[t.categoryId || ''] = (counts[t.categoryId || ''] || 0) + 1;
+    const prevTotal = prev.reduce((s, c) => s + c.value, 0);
+    const [y, m] = mk.split('-').map(Number);
+    const days = mk === curMonth() ? new Date().getDate() : daysInMonth(y, m);
+    let h = `<div class="mnav" style="margin-top:0"><button id="cc-prev" aria-label="Предыдущий месяц">‹</button><span class="mtitle">${monthTitle(mk)}</span><button id="cc-next" aria-label="Следующий месяц">›</button></div>
+      <div class="seg" id="cc-kind"><button data-v="expense" class="${kind === 'expense' ? 'on' : ''}">Расходы</button><button data-v="income" class="${kind === 'income' ? 'on' : ''}">Доходы</button></div>`;
+    if (!cats.length) return h + `<div class="card">${emptyBox('📭', kind === 'expense' ? 'Расходов за этот месяц нет' : 'Доходов за этот месяц нет')}</div>`;
+    const word = kind === 'expense' ? 'расходы' : 'доходы';
+    h += `<div class="card"><div style="display:grid;place-items:center">${donut(topN(cats, 8), total, money(total), word).replace('class="donut"', 'class="donut lg"')}</div>
+      <div class="kv" style="margin-top:12px"><span>Всего</span><b class="${kind === 'income' ? 'pos' : ''}">${money(total)}</b></div>
+      ${prevTotal ? `<div class="kv"><span>Прошлый месяц</span><b>${money(prevTotal)}</b></div>` : ''}
+      ${kind === 'expense' && days ? `<div class="kv"><span>В среднем в день</span><b>${money(Math.round(total / days))}</b></div>` : ''}</div>`;
+    h += `<h2 class="sec">По категориям</h2><div class="list">${cats.map(c => {
+      const p = prev.find(x => x.id === c.id)?.value || 0;
+      const diff = p ? Math.round((c.value - p) / p * 100) : null;
+      const good = kind === 'expense' ? diff < 0 : diff > 0;
+      const change = diff == null ? '<small>новое</small>' : diff === 0 ? '<small>как в прошлом</small>' : `<small class="${good ? 'pos' : 'neg'}">${diff > 0 ? '▲' : '▼'} ${Math.abs(diff)}%</small>`;
+      const n = counts[c.id] || 0;
+      return `<button class="prog-row ${c.id === focusId ? 'focus' : ''}" data-cat="${c.id}" data-kind="${kind}"><div class="prog-top">${icBox(c.icon, c.color)}<span class="rb"><span class="rt">${esc(c.name)}</span><span class="rs">${(c.value / total * 100).toFixed(1).replace('.', ',')}% · ${n} ${plural(n, 'операция', 'операции', 'операций')}</span></span><span class="ra">${money(c.value)}${change}</span></div>
+        <div class="bar"><i style="background:${c.color};width:${(c.value / cats[0].value * 100).toFixed(1)}%"></i></div></button>`;
+    }).join('')}</div><p class="hint" style="text-align:center">Нажмите на категорию, чтобы увидеть её операции. Изменение — к прошлому месяцу.</p>`;
+    return h;
+  };
+  openSheet({
+    title: kind === 'expense' ? 'Расходы по категориям' : 'Доходы по категориям', body: body(),
+    onMount: w => {
+      const wire = () => {
+        $('.sheet-title', w).textContent = kind === 'expense' ? 'Расходы по категориям' : 'Доходы по категориям';
+        $('#cc-prev', w).onclick = () => { mk = shiftMonth(mk, -1); focusId = null; w.refresh(); };
+        $('#cc-next', w).onclick = () => { mk = shiftMonth(mk, 1); focusId = null; w.refresh(); };
+        $('#cc-kind', w).onclick = e => { const b = e.target.closest('[data-v]'); if (b) { kind = b.dataset.v; focusId = null; w.refresh(); } };
+        $$('[data-cat]', w).forEach(b => b.onclick = () => { ui.month = mk; ACTIONS.catOps({ dataset: { id: b.dataset.cat, kind: b.dataset.kind } }); });
+        const f = $('.prog-row.focus', w);
+        if (f) setTimeout(() => f.scrollIntoView({ block: 'center', behavior: 'smooth' }), 350);
+      };
+      w.refresh = () => { $('.sheet-body', w).innerHTML = body(); wire(); };
+      wire();
+    },
+  });
+}
+
 function reportsSheet() {
   const st = { mode: 'month', kind: 'expense', month: ui.month, year: +ui.month.slice(0, 4) };
   const body = () => {
@@ -2007,7 +2167,14 @@ const ACTIONS = {
   tab: el => { ui.tab = el.dataset.v; $$('.sheet-wrap').forEach(w => w.close()); render(); window.scrollTo(0, 0); },
   month: el => { ui.month = shiftMonth(ui.month, +el.dataset.d); render(); },
   monthNow: () => { ui.month = curMonth(); render(); },
-  addTx: () => txForm(null),
+  addTx: () => {
+    // На вкладке «Операции» подставляем текущий фильтр: счёт, тип, категорию
+    const f = ui.ops, onOps = ui.tab === 'ops';
+    txForm(null, onOps ? { accountId: f.accountId || undefined, type: ['expense', 'income'].includes(f.type) ? f.type : undefined, categoryId: f.categoryId && f.categoryId !== '__none' ? f.categoryId : undefined } : {});
+  },
+  opsKind: el => { ui.ops = { type: el.dataset.v, accountId: '', categoryId: '', q: '' }; ACTIONS.tab({ dataset: { v: 'ops' } }); },
+  recToAcc: el => { const a = acc(el.dataset.id); const from = lastAccountId(); recForm(null, { type: 'transfer', toAccountId: a.id, accountId: from !== a.id ? from : '', name: 'Платёж: ' + a.name }); },
+  backupLater: () => { S.settings.backupSnooze = today(); commit(); },
   addTxAcc: el => txForm(null, { accountId: el.dataset.id }),
   transfer: () => txForm(null, { type: 'transfer' }),
   transferFrom: el => txForm(null, { type: 'transfer', accountId: el.dataset.id }),
@@ -2020,7 +2187,8 @@ const ACTIONS = {
   opsByAcc: el => { ui.ops = { type: 'all', accountId: el.dataset.id, categoryId: '', q: '' }; ACTIONS.tab({ dataset: { v: 'ops' } }); },
   opsType: el => { ui.ops.type = el.dataset.v; render(); },
   opsClearCat: () => { ui.ops.categoryId = ''; render(); },
-  catOps: el => { if (el.dataset.id === '__rest') return; ui.ops = { type: 'expense', accountId: '', categoryId: el.dataset.id || null, q: '' }; ACTIONS.tab({ dataset: { v: 'ops' } }); },
+  catOps: el => { if (el.dataset.id === '__rest') return; ui.ops = { type: el.dataset.kind || 'expense', accountId: '', categoryId: el.dataset.id || '__none', q: '' }; ACTIONS.tab({ dataset: { v: 'ops' } }); },
+  catChart: el => categoryChartSheet(ui.month, 'expense', el.dataset.id),
   plansSeg: el => { ui.plans = el.dataset.v; render(); },
   goPlans: el => { ui.plans = el.dataset.v; ACTIONS.tab({ dataset: { v: 'plans' } }); },
   addGoal: () => goalForm(null),
@@ -2086,4 +2254,5 @@ render();
 showLock();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW', err));
+  navigator.storage?.persist?.().catch(() => {});
 }
